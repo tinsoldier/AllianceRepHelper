@@ -11,14 +11,19 @@ namespace AllianceRepHelper
 {
     /// <summary>
     /// Main session component for the Alliance Reputation Helper mod.
-    /// Lets players choose to align with a configured NPC faction via chat command.
+    /// Lets faction Founders/Leaders choose to align their faction with a configured
+    /// NPC faction via chat command.
     /// 
     /// Usage:  /alliance FactionTag
-    /// Example: /alliance Soban
+    /// Example: /alliance SOBAN
     /// 
-    /// When a player aligns with a faction:
-    ///   - Their reputation with the chosen faction is set to +AllyReputation (default 1500)
-    ///   - Their reputation with all other configured factions is set to -EnemyReputation (default 1500)
+    /// When a faction leader aligns with a target NPC faction:
+    ///   - Their faction's reputation with the chosen NPC faction is set to +AllyReputation (default 1500)
+    ///   - Their faction's reputation with all other configured NPC factions is set to EnemyReputation (default -1500)
+    /// 
+    /// Requirements:
+    ///   - The player must belong to a faction.
+    ///   - The player must be a Founder or Leader of their faction.
     /// </summary>
     [MySessionComponentDescriptor(MyUpdateOrder.NoUpdate)]
     public class AllianceRepSession : MySessionComponentBase
@@ -26,7 +31,7 @@ namespace AllianceRepHelper
         // -- Constants -------------------------------------------------------
         private const string CommandPrefix = "/alliance";
         private const string ConfigFileName = "AllianceRepHelper.cfg";
-        private const string DataFileName = "AllianceRepHelper_PlayerChoices.dat";
+        private const string DataFileName = "AllianceRepHelper_FactionChoices.dat";
         private const ushort NetworkChannelId = 39471; // Arbitrary unique ID for our mod's network messages
 
         // -- Configuration (loaded from file, with sensible defaults) --------
@@ -36,7 +41,8 @@ namespace AllianceRepHelper
         private readonly List<string> _allowedFactionTags = new List<string>();
 
         // -- Runtime State ---------------------------------------------------
-        private readonly HashSet<ulong> _playersWhoHaveChosen = new HashSet<ulong>();
+        // Tracks which player factions have already made an alliance choice (by faction ID)
+        private readonly HashSet<long> _factionsWhoHaveChosen = new HashSet<long>();
         private bool _isServer;
 
         // ====================================================================
@@ -51,23 +57,23 @@ namespace AllianceRepHelper
             if (_isServer)
             {
                 LoadConfig();
-                LoadPlayerChoices();
+                LoadFactionChoices();
 
                 // MessageEnteredSender fires on the server with the sender's Steam ID
                 MyAPIGateway.Utilities.MessageEnteredSender += OnMessageEnteredSender;
 
                 // Register network handler so clients can receive chat feedback
-                MyAPIGateway.Multiplayer.RegisterMessageHandler(NetworkChannelId, OnClientMessageReceived);
+                MyAPIGateway.Multiplayer.RegisterSecureMessageHandler(NetworkChannelId, OnSecureMessageReceived);
 
                 Log("AllianceRepHelper loaded on server. Allowed factions: " +
                  (_allowedFactionTags.Count > 0
                 ? string.Join(", ", _allowedFactionTags)
-                      : "(any NPC faction)"));
+                : "(none configured)"));
             }
             else
             {
                 // Client side: register to receive feedback messages from server
-                MyAPIGateway.Multiplayer.RegisterMessageHandler(NetworkChannelId, OnClientMessageReceived);
+                MyAPIGateway.Multiplayer.RegisterSecureMessageHandler(NetworkChannelId, OnSecureMessageReceived);
             }
         }
 
@@ -76,10 +82,10 @@ namespace AllianceRepHelper
             MyAPIGateway.Utilities.MessageEnteredSender -= OnMessageEnteredSender;
 
             if (MyAPIGateway.Multiplayer != null)
-                MyAPIGateway.Multiplayer.UnregisterMessageHandler(NetworkChannelId, OnClientMessageReceived);
+                MyAPIGateway.Multiplayer.UnregisterSecureMessageHandler(NetworkChannelId, OnSecureMessageReceived);
 
             if (_isServer)
-                SavePlayerChoices();
+                SaveFactionChoices();
 
             base.UnloadData();
         }
@@ -128,10 +134,11 @@ namespace AllianceRepHelper
         private void SendHelp(ulong steamId)
         {
             SendChatToPlayer(steamId, "Alliance Rep Helper Commands:");
-            SendChatToPlayer(steamId, "  /alliance <FactionTag>  - Align with a faction");
-            SendChatToPlayer(steamId, "  /alliance list      - Show available factions");
-            SendChatToPlayer(steamId, "  /alliance status        - Show your current reputation");
-            SendChatToPlayer(steamId, "  /alliance help- Show this help");
+            SendChatToPlayer(steamId, "  /alliance <FactionTag>  - Align your faction with an NPC faction");
+            SendChatToPlayer(steamId, "  /alliance list - Show available NPC factions");
+            SendChatToPlayer(steamId, "  /alliance status        - Show your faction's current reputation");
+            SendChatToPlayer(steamId, "  /alliance help       - Show this help");
+            SendChatToPlayer(steamId, "Note: You must be a Founder or Leader of your faction to use /alliance.");
         }
 
         private void SendFactionList(ulong steamId)
@@ -159,24 +166,33 @@ namespace AllianceRepHelper
                 return;
             }
 
-            var factions = GetAllowedFactions();
-            if (factions.Count == 0)
+            // Check if player is in a faction
+            IMyFaction playerFaction = MyAPIGateway.Session.Factions.TryGetPlayerFaction(identityId);
+            if (playerFaction == null)
+            {
+                SendChatToPlayer(steamId, "You are not in a faction. Join or create a faction first.");
+                return;
+            }
+
+            var npcFactions = GetAllowedFactions();
+            if (npcFactions.Count == 0)
             {
                 SendChatToPlayer(steamId, "No alliance factions are configured.");
                 return;
             }
 
-            SendChatToPlayer(steamId, "Your Faction Reputations:");
-            foreach (var faction in factions)
+            SendChatToPlayer(steamId, string.Format("Faction [{0}] Reputation:", playerFaction.Tag));
+            foreach (var npcFaction in npcFactions)
             {
-                int rep = MyAPIGateway.Session.Factions.GetReputationBetweenPlayerAndFaction(identityId, faction.FactionId);
-                SendChatToPlayer(steamId, string.Format("  [{0}] {1}: {2}", faction.Tag, faction.Name, rep));
+                int factionRep = MyAPIGateway.Session.Factions.GetReputationBetweenFactions(playerFaction.FactionId, npcFaction.FactionId);
+                int playerRep = MyAPIGateway.Session.Factions.GetReputationBetweenPlayerAndFaction(identityId, npcFaction.FactionId);
+                SendChatToPlayer(steamId, string.Format("  [{0}] {1}: faction={2}, personal={3}", npcFaction.Tag, npcFaction.Name, factionRep, playerRep));
             }
 
-            if (_playersWhoHaveChosen.Contains(steamId))
-                SendChatToPlayer(steamId, "  (You have already chosen an alliance)");
+            if (_factionsWhoHaveChosen.Contains(playerFaction.FactionId))
+                SendChatToPlayer(steamId, "  (Your faction has already chosen an alliance)");
             else
-                SendChatToPlayer(steamId, "  (You have not yet chosen an alliance)");
+                SendChatToPlayer(steamId, "  (Your faction has not yet chosen an alliance)");
         }
 
         private void ProcessAlignCommand(ulong steamId, string factionTag)
@@ -189,7 +205,22 @@ namespace AllianceRepHelper
                 return;
             }
 
-            // 2. Find the target faction
+            // 2. Check if player is in a faction
+            IMyFaction playerFaction = MyAPIGateway.Session.Factions.TryGetPlayerFaction(identityId);
+            if (playerFaction == null)
+            {
+                SendChatToPlayer(steamId, "You must be in a faction to use this command. Join or create a faction first.");
+                return;
+            }
+
+            // 3. Check if player is a Founder or Leader of their faction
+            if (!playerFaction.IsFounder(identityId) && !playerFaction.IsLeader(identityId))
+            {
+                SendChatToPlayer(steamId, "Only faction Founders and Leaders can set alliance reputation. Ask your faction leader.");
+                return;
+            }
+
+            // 4. Find the target NPC faction
             IMyFaction targetFaction = MyAPIGateway.Session.Factions.TryGetFactionByTag(factionTag);
             if (targetFaction == null)
             {
@@ -197,41 +228,53 @@ namespace AllianceRepHelper
                 return;
             }
 
-            // 3. Validate the faction is allowed
+            // 5. Validate the target faction is an allowed NPC faction
             if (!IsFactionAllowed(targetFaction))
             {
                 SendChatToPlayer(steamId, string.Format("Faction [{0}] is not available for alliance. Use /alliance list to see available factions.", targetFaction.Tag));
                 return;
             }
 
-            // 4. Check if player is a member of the target -- they shouldn't be
-            if (targetFaction.IsMember(identityId))
+            // 6. Prevent aligning with yourself (player faction shouldn't be an NPC faction in the list)
+            if (playerFaction.FactionId == targetFaction.FactionId)
             {
-                SendChatToPlayer(steamId, "You are already a member of that faction!");
+                SendChatToPlayer(steamId, "You cannot align with your own faction!");
                 return;
             }
 
-            // 5. Set reputations
+            // 7. Set faction-to-faction reputations (both directions)
+            //    AND set player-to-faction reputation for every member in the player's faction,
+            //    since the game UI may display player-to-faction rep rather than faction-to-faction.
             var allAllowed = GetAllowedFactions();
-            foreach (var faction in allAllowed)
+            int memberCount = 0;
+            foreach (var npcFaction in allAllowed)
             {
-                if (faction.FactionId == targetFaction.FactionId)
+                int rep = (npcFaction.FactionId == targetFaction.FactionId) ? _allyReputation : _enemyReputation;
+
+                // Faction-to-faction in both directions
+                MyAPIGateway.Session.Factions.SetReputation(playerFaction.FactionId, npcFaction.FactionId, rep);
+                MyAPIGateway.Session.Factions.SetReputation(npcFaction.FactionId, playerFaction.FactionId, rep);
+
+                // Player-to-faction for every member of the player's faction
+                foreach (var kvp in playerFaction.Members)
                 {
-                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(identityId, faction.FactionId, _allyReputation);
-                    Log(string.Format("Set reputation for player {0} (steam:{1}) -> [{2}] to {3}", identityId, steamId, faction.Tag, _allyReputation));
+                    long memberId = kvp.Key;
+                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(memberId, npcFaction.FactionId, rep);
+
+                    if (npcFaction.FactionId == allAllowed[0].FactionId)
+                        memberCount++;
                 }
-                else
-                {
-                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(identityId, faction.FactionId, _enemyReputation);
-                    Log(string.Format("Set reputation for player {0} (steam:{1}) -> [{2}] to {3}", identityId, steamId, faction.Tag, _enemyReputation));
-                }
+
+                Log(string.Format("Set faction [{0}] (id:{1}) <-> [{2}] (id:{3}) reputation to {4}, plus {5} member(s) player rep (requested by steam:{6})",
+                    playerFaction.Tag, playerFaction.FactionId, npcFaction.Tag, npcFaction.FactionId, rep, playerFaction.Members.Count, steamId));
             }
 
-            // 6. Record the choice
-            _playersWhoHaveChosen.Add(steamId);
-            SavePlayerChoices();
+            // 8. Record the choice
+            _factionsWhoHaveChosen.Add(playerFaction.FactionId);
+            SaveFactionChoices();
 
-            SendChatToPlayer(steamId, string.Format("You have aligned with [{0}] {1}!", targetFaction.Tag, targetFaction.Name));
+            SendChatToPlayer(steamId, string.Format("Your faction [{0}] has allied with [{1}] {2}!",
+                        playerFaction.Tag, targetFaction.Tag, targetFaction.Name));
             SendChatToPlayer(steamId, string.Format("  Reputation set to {0} with [{1}].", _allyReputation, targetFaction.Tag));
             if (allAllowed.Count > 1)
             {
@@ -296,9 +339,14 @@ namespace AllianceRepHelper
 
         /// <summary>
         /// Client-side handler for network messages from the server.
+        /// Uses the secure message handler signature: (channelId, data, senderSteamId, isFromServer).
         /// </summary>
-        private void OnClientMessageReceived(byte[] data)
+        private void OnSecureMessageReceived(ushort channelId, byte[] data, ulong senderSteamId, bool isFromServer)
         {
+            // Only process messages that came from the server
+            if (!isFromServer)
+                return;
+
             try
             {
                 string text = System.Text.Encoding.UTF8.GetString(data);
@@ -389,7 +437,7 @@ namespace AllianceRepHelper
                     writer.WriteLine("# -----------------------------------");
                     writer.WriteLine("# Comma-separated list of faction tags that players can align with.");
                     writer.WriteLine("# These MUST be set for the mod to function.");
-                    writer.WriteLine("# Example: Factions = SOBAN, KADESH");
+                    writer.WriteLine("# Example: Factions = SOBAN, KHAANEPH");
                     writer.WriteLine("Factions = ");
                     writer.WriteLine();
                     writer.WriteLine("# Reputation value granted to the chosen ally faction (default: 1500)");
@@ -410,10 +458,10 @@ namespace AllianceRepHelper
         }
 
         // ====================================================================
-        //  Player Choice Persistence (per-world)
+        //  Faction Choice Persistence (per-world)
         // ====================================================================
 
-        private void LoadPlayerChoices()
+        private void LoadFactionChoices()
         {
             try
             {
@@ -426,33 +474,33 @@ namespace AllianceRepHelper
                     while ((line = reader.ReadLine()) != null)
                     {
                         line = line.Trim();
-                        ulong steamId;
-                        if (ulong.TryParse(line, out steamId))
-                            _playersWhoHaveChosen.Add(steamId);
+                        long factionId;
+                        if (long.TryParse(line, out factionId))
+                            _factionsWhoHaveChosen.Add(factionId);
                     }
                 }
 
-                Log(string.Format("Loaded {0} player choice records.", _playersWhoHaveChosen.Count));
+                Log(string.Format("Loaded {0} faction choice records.", _factionsWhoHaveChosen.Count));
             }
             catch (Exception ex)
             {
-                Log("Error loading player choices: " + ex.Message);
+                Log("Error loading faction choices: " + ex.Message);
             }
         }
 
-        private void SavePlayerChoices()
+        private void SaveFactionChoices()
         {
             try
             {
                 using (TextWriter writer = MyAPIGateway.Utilities.WriteFileInWorldStorage(DataFileName, typeof(AllianceRepSession)))
                 {
-                    foreach (ulong steamId in _playersWhoHaveChosen)
-                        writer.WriteLine(steamId.ToString());
+                    foreach (long factionId in _factionsWhoHaveChosen)
+                        writer.WriteLine(factionId.ToString());
                 }
             }
             catch (Exception ex)
             {
-                Log("Error saving player choices: " + ex.Message);
+                Log("Error saving faction choices: " + ex.Message);
             }
         }
 
