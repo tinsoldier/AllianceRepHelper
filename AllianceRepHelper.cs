@@ -25,7 +25,7 @@ namespace AllianceRepHelper
     ///   - The player must belong to a faction.
     ///   - The player must be a Founder or Leader of their faction.
     /// </summary>
-    [MySessionComponentDescriptor(MyUpdateOrder.NoUpdate)]
+    [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation)]
     public class AllianceRepSession : MySessionComponentBase
     {
         // -- Constants -------------------------------------------------------
@@ -37,6 +37,7 @@ namespace AllianceRepHelper
         // -- Configuration (loaded from file, with sensible defaults) --------
         private int _allyReputation = 1500;
         private int _enemyReputation = -1500;
+        private int _defaultReputation = -500;
         private bool _allowOnlyNpcFactions = true;
         private readonly List<string> _allowedFactionTags = new List<string>();
 
@@ -44,6 +45,9 @@ namespace AllianceRepHelper
         // Tracks which player factions have already made an alliance choice (by faction ID)
         private readonly HashSet<long> _factionsWhoHaveChosen = new HashSet<long>();
         private bool _isServer;
+
+        // Queued actions to run on the next simulation tick (deferred from event handlers)
+        private readonly List<Action> _pendingActions = new List<Action>();
 
         // ====================================================================
         //  Lifecycle
@@ -65,6 +69,10 @@ namespace AllianceRepHelper
                 // Register network handler so clients can receive chat feedback
                 MyAPIGateway.Multiplayer.RegisterSecureMessageHandler(NetworkChannelId, OnSecureMessageReceived);
 
+                // Listen for faction creation and membership changes
+                MyAPIGateway.Session.Factions.FactionCreated += OnFactionCreated;
+                MyAPIGateway.Session.Factions.FactionStateChanged += OnFactionStateChanged;
+
                 Log("AllianceRepHelper loaded on server. Allowed factions: " +
                  (_allowedFactionTags.Count > 0
                 ? string.Join(", ", _allowedFactionTags)
@@ -85,9 +93,39 @@ namespace AllianceRepHelper
                 MyAPIGateway.Multiplayer.UnregisterSecureMessageHandler(NetworkChannelId, OnSecureMessageReceived);
 
             if (_isServer)
+            {
+                MyAPIGateway.Session.Factions.FactionCreated -= OnFactionCreated;
+                MyAPIGateway.Session.Factions.FactionStateChanged -= OnFactionStateChanged;
                 SaveFactionChoices();
+            }
 
             base.UnloadData();
+        }
+
+        /// <summary>
+        /// Processes any deferred actions queued by event handlers.
+        /// Runs every tick but no-ops immediately if the queue is empty.
+        /// </summary>
+        public override void UpdateAfterSimulation()
+        {
+            if (_pendingActions.Count == 0)
+                return;
+
+            // Copy and clear so handlers can queue new work during execution
+            var actions = new List<Action>(_pendingActions);
+            _pendingActions.Clear();
+
+            foreach (var action in actions)
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception ex)
+                {
+                    Log("Error in deferred action: " + ex.Message);
+                }
+            }
         }
 
         // ====================================================================
@@ -322,6 +360,94 @@ namespace AllianceRepHelper
         }
 
         // ====================================================================
+        //  Faction Event Handlers (Server-Side)
+        // ====================================================================
+
+        /// <summary>
+        /// Called when any faction is created. Defers setting the new faction's default
+        /// reputation to the next simulation tick, since the faction may not be fully
+        /// registered in the game during the same tick it was created.
+        /// </summary>
+        private void OnFactionCreated(long factionId)
+        {
+            _pendingActions.Add(() => ApplyDefaultReputation(factionId));
+        }
+
+        /// <summary>
+        /// Called on faction state changes. When a player joins a faction (FactionMemberAcceptJoin),
+        /// defers syncing their personal reputation to the next simulation tick.
+        /// </summary>
+        private void OnFactionStateChanged(MyFactionStateChange action, long fromFactionId, long toFactionId, long playerId, long senderId)
+        {
+            if (action != MyFactionStateChange.FactionMemberAcceptJoin)
+                return;
+
+            _pendingActions.Add(() => SyncNewMemberReputation(toFactionId, playerId));
+        }
+
+        /// <summary>
+        /// Sets a newly created faction's reputation with all configured NPC factions
+        /// to the default value, including personal rep for the founder.
+        /// </summary>
+        private void ApplyDefaultReputation(long factionId)
+        {
+            var npcFactions = GetAllowedFactions();
+            if (npcFactions.Count == 0)
+                return;
+
+            IMyFaction newFaction = MyAPIGateway.Session.Factions.TryGetFactionById(factionId);
+            if (newFaction == null)
+                return;
+
+            // Don't set default rep for NPC factions (they may be our configured alliance factions)
+            if (newFaction.IsEveryoneNpc())
+                return;
+
+            foreach (var npcFaction in npcFactions)
+            {
+                // Faction-to-faction in both directions
+                MyAPIGateway.Session.Factions.SetReputation(newFaction.FactionId, npcFaction.FactionId, _defaultReputation);
+                MyAPIGateway.Session.Factions.SetReputation(npcFaction.FactionId, newFaction.FactionId, _defaultReputation);
+
+                // Set personal rep for all members (typically just the founder at this point)
+                foreach (var kvp in newFaction.Members)
+                {
+                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(kvp.Key, npcFaction.FactionId, _defaultReputation);
+                }
+            }
+
+            Log(string.Format("New faction [{0}] (id:{1}) created -- set default reputation to {2} with all configured NPC factions.",
+                newFaction.Tag, newFaction.FactionId, _defaultReputation));
+        }
+
+        /// <summary>
+        /// Syncs a new faction member's personal reputation with all configured NPC factions
+        /// to match their faction's current faction-to-faction reputation.
+        /// </summary>
+        private void SyncNewMemberReputation(long factionId, long playerId)
+        {
+            var npcFactions = GetAllowedFactions();
+            if (npcFactions.Count == 0)
+                return;
+
+            IMyFaction joinedFaction = MyAPIGateway.Session.Factions.TryGetFactionById(factionId);
+            if (joinedFaction == null)
+                return;
+
+            if (joinedFaction.IsEveryoneNpc())
+                return;
+
+            foreach (var npcFaction in npcFactions)
+            {
+                int factionRep = MyAPIGateway.Session.Factions.GetReputationBetweenFactions(joinedFaction.FactionId, npcFaction.FactionId);
+                MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(playerId, npcFaction.FactionId, factionRep);
+            }
+
+            Log(string.Format("Player (id:{0}) joined faction [{1}] (id:{2}) -- synced personal rep to match faction rep.",
+                playerId, joinedFaction.Tag, joinedFaction.FactionId));
+        }
+
+        // ====================================================================
         //  Network / Chat Feedback
         // ====================================================================
 
@@ -403,6 +529,9 @@ namespace AllianceRepHelper
                                 case "enemyreputation":
                                     int.TryParse(value, out _enemyReputation);
                                     break;
+                                case "defaultreputation":
+                                    int.TryParse(value, out _defaultReputation);
+                                    break;
                                 case "allowonlynpcfactions":
                                     bool.TryParse(value, out _allowOnlyNpcFactions);
                                     break;
@@ -452,6 +581,11 @@ namespace AllianceRepHelper
                     writer.WriteLine();
                     writer.WriteLine("# Reputation value set for all OTHER configured factions (default: -1500)");
                     writer.WriteLine("EnemyReputation = -1500");
+                    writer.WriteLine();
+                    writer.WriteLine("# Default reputation for newly created factions with all configured NPC factions (default: -500)");
+                    writer.WriteLine("# New factions start mildly negative. Players can improve rep through gameplay");
+                    writer.WriteLine("# (e.g., killing enemies of an NPC faction) or commit fully with /alliance.");
+                    writer.WriteLine("DefaultReputation = -500");
                     writer.WriteLine();
                     writer.WriteLine("# Only allow NPC factions to be selected (default: true)");
                     writer.WriteLine("# This prevents players from using the command to force relationships with player factions.");
