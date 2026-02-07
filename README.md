@@ -162,3 +162,217 @@ When a faction Founder or Leader uses the `/alliance` command, their **faction's
 - Role checks use `IMyFaction.IsFounder(identityId)` and `IMyFaction.IsLeader(identityId)`.
 - Admin checks use `MyAPIGateway.Session.IsUserAdmin(steamId)`.
 - The mod targets **.NET Framework 4.8** and **C# 6.0**, built with [MDK2](https://github.com/malware-dev/MDK-SE).
+
+
+
+## Steam Workshop Description
+
+Below is the mod description formatted in Steam Workshop BBCode. Copy everything between the `<!-- STEAM START -->` and `<!-- STEAM END -->` markers.
+
+<!-- STEAM START -->
+```
+[h1]Alliance Rep Helper[/h1]
+
+Lets faction leaders align their faction with a configured NPC faction using a simple chat command. Designed for servers using Modular Encounters Systems (MES) and Alliance-style territorial gameplay.
+
+Instead of slow reputation grinding or bugging an admin, your faction's Founder or Leader can commit to an NPC alliance with a single command.
+
+[hr][/hr]
+
+[h2]How It Works[/h2]
+
+When a faction Founder or Leader runs [b]/alliance <FactionTag>[/b]:
+
+[olist]
+[*] Your [b]faction's[/b] reputation with the [b]chosen NPC faction[/b] is set to the ally value (default: +1500).
+[*] Your [b]faction's[/b] reputation with [b]all other configured NPC factions[/b] is set to the enemy value (default: -1500).
+[*] The choice is recorded and persisted for the world.
+[/olist]
+
+[b]Requirements:[/b]
+[list]
+[*] You [b]must be in a faction[/b]. Factionless players cannot use the command.
+[*] You [b]must be a Founder or Leader[/b] of your faction.
+[*] The target must be in the server's configured list of allowed NPC factions.
+[/list]
+
+This sets [b]faction-to-faction[/b] reputation. All members of your faction inherit the relationship.
+
+[h3]New Factions[/h3]
+
+When a player creates a new faction, it is automatically set to the configured default reputation (default: -600, Enemies) with all configured NPC factions. New factions start hostile to everyone until they choose an alliance.
+
+[hr][/hr]
+
+[h2]Chat Commands[/h2]
+
+All commands are typed in chat. They are case-insensitive and [b]not[/b] visible to other players.
+
+[h3]Player Commands[/h3]
+
+[table]
+[tr]
+[th]Command[/th]
+[th]Description[/th]
+[/tr]
+[tr]
+[td][b]/alliance <FactionTag>[/b][/td]
+[td]Align your faction with the specified NPC faction. Requires Founder or Leader role. One-time only.[/td]
+[/tr]
+[tr]
+[td][b]/alliance list[/b][/td]
+[td]Show available NPC factions.[/td]
+[/tr]
+[tr]
+[td][b]/alliance status[/b][/td]
+[td]Show your faction's current reputation with each configured NPC faction.[/td]
+[/tr]
+[tr]
+[td][b]/alliance help[/b][/td]
+[td]Show in-game help.[/td]
+[/tr]
+[/table]
+
+[h3]Admin Commands[/h3]
+
+These commands require server admin privileges.
+
+[table]
+[tr]
+[th]Command[/th]
+[th]Description[/th]
+[/tr]
+[tr]
+[td][b]/alliance reset <Tag>[/b][/td]
+[td]Reset a specific player faction to default reputation and clear its alliance choice. The faction can then use /alliance again.[/td]
+[/tr]
+[tr]
+[td][b]/alliance resetall[/b][/td]
+[td]Reset ALL player factions to default reputation and clear all alliance choices. Every faction can then use /alliance again.[/td]
+[/tr]
+[/table]
+
+[h3]Example[/h3]
+[code]
+/alliance SOBAN
+[/code]
+
+[quote]
+Your faction [MYFC] has allied with [SOBAN] Soban Fleet!
+Reputation set to 1500 with [SOBAN].
+Reputation set to -1500 with all other alliance factions.
+[/quote]
+
+[hr][/hr]
+
+[h2]Setup (Server Owners)[/h2]
+
+[olist]
+[*] Subscribe to the mod on the Workshop.
+[*] Add it to your world/server and load it once. A default config file will be created.
+[*] Edit the config file to list the NPC faction tags players can align with.
+[*] Restart the world/server.
+[/olist]
+
+[hr][/hr]
+
+[h2]Configuration[/h2]
+
+[h3]Config File Location[/h3]
+
+The config is stored in the world storage directory:
+
+[b]Dedicated server:[/b]
+[code]
+<SE Install>/Instances/<InstanceName>/Saves/<WorldName>/Storage/<ModId>.sbm_AllianceRepHelper/AllianceRepHelper.cfg
+[/code]
+
+[b]Local / single-player:[/b]
+[code]
+%AppData%/SpaceEngineers/Saves/<SteamId>/<WorldName>/Storage/AllianceRepHelper_AllianceRepHelper/AllianceRepHelper.cfg
+[/code]
+
+[i]Tip: If you can't find it, load the world once with the mod enabled and it will be created automatically.[/i]
+
+[h3]Config Format[/h3]
+
+Simple [b]Key = Value[/b] format. Lines starting with # or // are comments.
+
+[code]
+# Comma-separated faction tags players can align with.
+# MUST be set for the mod to work.
+Factions = SOBAN, KHAANEPH
+
+# Rep granted to chosen ally faction (default: 1500)
+AllyReputation = 1500
+
+# Rep set for all OTHER configured factions (default: -1500)
+EnemyReputation = -1500
+
+# Default rep for newly created factions (default: -600)
+# Values at or below -600 reliably show as Enemies (red).
+# The enemy/neutral threshold is around -500.
+DefaultReputation = -600
+
+# Only allow NPC factions (default: true)
+AllowOnlyNpcFactions = true
+[/code]
+
+[h3]Config Options[/h3]
+
+[table]
+[tr]
+[th]Key[/th]
+[th]Type[/th]
+[th]Default[/th]
+[th]Description[/th]
+[/tr]
+[tr]
+[td]Factions[/td]
+[td]Comma-separated strings[/td]
+[td](empty)[/td]
+[td][b]Required.[/b] NPC faction tags players can choose. Must match in-game tags exactly.[/td]
+[/tr]
+[tr]
+[td]AllyReputation[/td]
+[td]Integer[/td]
+[td]1500[/td]
+[td]Reputation set with the chosen NPC faction.[/td]
+[/tr]
+[tr]
+[td]EnemyReputation[/td]
+[td]Integer[/td]
+[td]-1500[/td]
+[td]Reputation set with all other configured NPC factions.[/td]
+[/tr]
+[tr]
+[td]DefaultReputation[/td]
+[td]Integer[/td]
+[td]-600[/td]
+[td]Reputation for newly created factions. The enemy/neutral threshold is ~-500; use -600 or lower for reliable Enemies (red) status.[/td]
+[/tr]
+[tr]
+[td]AllowOnlyNpcFactions[/td]
+[td]Boolean[/td]
+[td]true[/td]
+[td]When true, only NPC-only factions can be selected. Prevents abuse on PvP servers.[/td]
+[/tr]
+[/table]
+
+[hr][/hr]
+
+[h2]Faction Choice Tracking[/h2]
+
+When the command is used, the faction's ID is saved to [b]AllianceRepHelper_FactionChoices.dat[/b] in the same storage folder.
+
+[b]Alliance choice is one-time only.[/b] Once a faction has chosen, the command cannot be used again for that faction. Use [b]/alliance status[/b] to check whether your faction has already chosen.
+
+[b]Admin tip:[/b] Use [b]/alliance reset <Tag>[/b] to reset a specific faction's choice in-game, or [b]/alliance resetall[/b] to reset everyone. No file editing or server restart required.
+
+[hr][/hr]
+
+[h2]Source Code[/h2]
+
+[url=https://github.com/tinsoldier/AllianceRepHelper]GitHub Repository[/url]
+```
+<!-- STEAM END -->
