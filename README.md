@@ -116,7 +116,7 @@ AllowOnlyNpcFactions = true
 
 When a faction Founder or Leader uses the `/alliance` command, their **faction's ID** is recorded in a separate data file (`AllianceRepHelper_FactionChoices.dat`) in the same world storage directory. This file is a simple list of faction IDs, one per line.
 
-This tracking is currently informational only -- the `/alliance status` command will tell the player whether their faction has already made a choice. **Enforcement of one-time-only usage is planned for a future update.**
+**Alliance choice is one-time only.** Once a faction has chosen an alliance, the command cannot be used again for that faction. The `/alliance status` command will show whether your faction has already made a choice.
 
 > **Admin tip:** To reset a faction's choice (e.g., if they want to switch sides), remove their faction ID from the `AllianceRepHelper_FactionChoices.dat` file and restart the server. You can find the faction ID in the server log from the original `/alliance` command.
 
@@ -140,7 +140,7 @@ All log entries are prefixed with `AllianceRepHelper:` for easy filtering.
 
 ## Planned Features (Phase 2+)
 
-- [ ] Enforce one-time alliance choice (block repeat usage of `/alliance`)
+- [x] Enforce one-time alliance choice (block repeat usage of `/alliance`)
 - [ ] Optional cooldown or prerequisites before allowing alignment
 - [ ] Admin override command to reset a faction's choice in-game
 - [ ] Configurable neutral-reputation requirement (must be neutral with all NPC factions before choosing)
@@ -311,7 +311,7 @@ AllowOnlyNpcFactions = true
 
 When the command is used, the faction's ID is saved to [b]AllianceRepHelper_FactionChoices.dat[/b] in the same storage folder.
 
-Currently this is informational only -- [b]/alliance status[/b] shows whether your faction has already chosen. One-time enforcement is planned for a future update.
+[b]Alliance choice is one-time only.[/b] Once a faction has chosen, the command cannot be used again for that faction. Use [b]/alliance status[/b] to check whether your faction has already chosen.
 
 [b]Admin tip:[/b] To reset a faction's choice, remove their faction ID from the .dat file and restart the server. The faction ID is logged when the command is first used.
 

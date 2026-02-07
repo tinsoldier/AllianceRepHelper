@@ -186,7 +186,7 @@ namespace AllianceRepHelper
             {
                 int factionRep = MyAPIGateway.Session.Factions.GetReputationBetweenFactions(playerFaction.FactionId, npcFaction.FactionId);
                 int playerRep = MyAPIGateway.Session.Factions.GetReputationBetweenPlayerAndFaction(identityId, npcFaction.FactionId);
-                SendChatToPlayer(steamId, string.Format("  [{0}] {1}: faction={2}, personal={3}", npcFaction.Tag, npcFaction.Name, factionRep, playerRep));
+                SendChatToPlayer(steamId, string.Format("  [{0] {1}: faction={2}, personal={3}", npcFaction.Tag, npcFaction.Name, factionRep, playerRep));
             }
 
             if (_factionsWhoHaveChosen.Contains(playerFaction.FactionId))
@@ -220,7 +220,14 @@ namespace AllianceRepHelper
                 return;
             }
 
-            // 4. Find the target NPC faction
+            // 4. Check if this faction has already made an alliance choice (one-time only)
+            if (_factionsWhoHaveChosen.Contains(playerFaction.FactionId))
+            {
+                SendChatToPlayer(steamId, "Your faction has already chosen an alliance. This can only be done once.");
+                return;
+            }
+
+            // 5. Find the target NPC faction
             IMyFaction targetFaction = MyAPIGateway.Session.Factions.TryGetFactionByTag(factionTag);
             if (targetFaction == null)
             {
@@ -228,21 +235,21 @@ namespace AllianceRepHelper
                 return;
             }
 
-            // 5. Validate the target faction is an allowed NPC faction
+            // 6. Validate the target faction is an allowed NPC faction
             if (!IsFactionAllowed(targetFaction))
             {
                 SendChatToPlayer(steamId, string.Format("Faction [{0}] is not available for alliance. Use /alliance list to see available factions.", targetFaction.Tag));
                 return;
             }
 
-            // 6. Prevent aligning with yourself (player faction shouldn't be an NPC faction in the list)
+            // 7. Prevent aligning with yourself (player faction shouldn't be an NPC faction in the list)
             if (playerFaction.FactionId == targetFaction.FactionId)
             {
                 SendChatToPlayer(steamId, "You cannot align with your own faction!");
                 return;
             }
 
-            // 7. Set faction-to-faction reputations (both directions)
+            // 8. Set faction-to-faction reputations (both directions)
             //    AND set player-to-faction reputation for every member in the player's faction,
             //    since the game UI may display player-to-faction rep rather than faction-to-faction.
             var allAllowed = GetAllowedFactions();
@@ -269,7 +276,7 @@ namespace AllianceRepHelper
                     playerFaction.Tag, playerFaction.FactionId, npcFaction.Tag, npcFaction.FactionId, rep, playerFaction.Members.Count, steamId));
             }
 
-            // 8. Record the choice
+            // 9. Record the choice
             _factionsWhoHaveChosen.Add(playerFaction.FactionId);
             SaveFactionChoices();
 
