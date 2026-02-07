@@ -163,6 +163,12 @@ namespace AllianceRepHelper
                 return;
             }
 
+            if (args.Equals("resetall", StringComparison.OrdinalIgnoreCase))
+            {
+                ProcessResetAllCommand(sender);
+                return;
+            }
+
             // Otherwise treat it as a faction tag to align with
             ProcessAlignCommand(sender, args);
         }
@@ -174,9 +180,10 @@ namespace AllianceRepHelper
         {
             SendChatToPlayer(steamId, "Alliance Rep Helper Commands:");
             SendChatToPlayer(steamId, "  /alliance <FactionTag>  - Align your faction with an NPC faction");
-            SendChatToPlayer(steamId, "  /alliance list - Show available NPC factions");
+            SendChatToPlayer(steamId, "  /alliance list          - Show available NPC factions");
             SendChatToPlayer(steamId, "  /alliance status        - Show your faction's current reputation");
-            SendChatToPlayer(steamId, "  /alliance help       - Show this help");
+            SendChatToPlayer(steamId, "  /alliance resetall      - (Admin) Reset all factions to default reputation");
+            SendChatToPlayer(steamId, "  /alliance help          - Show this help");
             SendChatToPlayer(steamId, "Note: You must be a Founder or Leader of your faction to use /alliance.");
         }
 
@@ -321,6 +328,92 @@ namespace AllianceRepHelper
             {
                 SendChatToPlayer(steamId, string.Format("  Reputation set to {0} with all other alliance factions.", _enemyReputation));
             }
+        }
+
+        /// <summary>
+        /// Admin-only command that resets all player factions to the default reputation
+        /// with configured NPC factions and clears the alliance choice tracking.
+        /// </summary>
+        private void ProcessResetAllCommand(ulong steamId)
+        {
+            // 1. Verify the player is an admin
+            if (!MyAPIGateway.Session.IsUserAdmin(steamId))
+            {
+                SendChatToPlayer(steamId, "This command requires admin privileges.");
+                return;
+            }
+
+            // 2. Get configured NPC factions
+            var npcFactions = GetAllowedFactions();
+            if (npcFactions.Count == 0)
+            {
+                SendChatToPlayer(steamId, "No alliance factions are configured. Nothing to reset.");
+                return;
+            }
+
+            // 3. Iterate all factions and reset non-NPC ones
+            int factionCount = 0;
+            int memberCount = 0;
+            foreach (var kvp in MyAPIGateway.Session.Factions.Factions)
+            {
+                IMyFaction playerFaction = kvp.Value;
+
+                // Skip NPC factions
+                if (playerFaction.IsEveryoneNpc())
+                    continue;
+
+                foreach (var npcFaction in npcFactions)
+                {
+                    // Phase 1: Set to -1500 to reliably establish Enemies relation
+                    MyVisualScriptLogicProvider.SetRelationBetweenFactions(playerFaction.Tag, npcFaction.Tag, -1500);
+                    MyVisualScriptLogicProvider.SetRelationBetweenFactions(npcFaction.Tag, playerFaction.Tag, -1500);
+
+                    // Set personal rep for all members
+                    foreach (var member in playerFaction.Members)
+                    {
+                        MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(member.Key, npcFaction.FactionId, -1500);
+                    }
+                }
+
+                memberCount += playerFaction.Members.Count;
+                factionCount++;
+            }
+
+            // Phase 2: Queue the actual default reputation on the next tick
+            _pendingActions.Add(() =>
+            {
+                foreach (var kvp2 in MyAPIGateway.Session.Factions.Factions)
+                {
+                    IMyFaction playerFaction = kvp2.Value;
+                    if (playerFaction.IsEveryoneNpc())
+                        continue;
+
+                    var allowed = GetAllowedFactions();
+                    foreach (var npcFaction in allowed)
+                    {
+                        MyVisualScriptLogicProvider.SetRelationBetweenFactions(playerFaction.Tag, npcFaction.Tag, _defaultReputation);
+                        MyVisualScriptLogicProvider.SetRelationBetweenFactions(npcFaction.Tag, playerFaction.Tag, _defaultReputation);
+
+                        foreach (var member in playerFaction.Members)
+                        {
+                            MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(member.Key, npcFaction.FactionId, _defaultReputation);
+                        }
+                    }
+                }
+
+                Log("ResetAll phase 2 complete -- all factions adjusted to default reputation.");
+            });
+
+            // 4. Clear alliance choices
+            int previousChoices = _factionsWhoHaveChosen.Count;
+            _factionsWhoHaveChosen.Clear();
+            SaveFactionChoices();
+
+            Log(string.Format("Admin (steam:{0}) executed resetall -- reset {1} faction(s) ({2} members) to default rep, cleared {3} alliance choice(s).",
+                steamId, factionCount, memberCount, previousChoices));
+
+            SendChatToPlayer(steamId, string.Format("Reset complete: {0} faction(s) reset to default reputation ({1}).", factionCount, _defaultReputation));
+            SendChatToPlayer(steamId, string.Format("  Cleared {0} alliance choice record(s). All factions may now use /alliance again.", previousChoices));
         }
 
         // ====================================================================
