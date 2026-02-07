@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using Sandbox.ModAPI;
+using Sandbox.Game;
 using VRage.Game;
 using VRage.Game.Components;
 using VRage.Game.ModAPI;
@@ -37,7 +38,7 @@ namespace AllianceRepHelper
         // -- Configuration (loaded from file, with sensible defaults) --------
         private int _allyReputation = 1500;
         private int _enemyReputation = -1500;
-        private int _defaultReputation = -500;
+        private int _defaultReputation = -600;
         private bool _allowOnlyNpcFactions = true;
         private readonly List<string> _allowedFactionTags = new List<string>();
 
@@ -224,7 +225,7 @@ namespace AllianceRepHelper
             {
                 int factionRep = MyAPIGateway.Session.Factions.GetReputationBetweenFactions(playerFaction.FactionId, npcFaction.FactionId);
                 int playerRep = MyAPIGateway.Session.Factions.GetReputationBetweenPlayerAndFaction(identityId, npcFaction.FactionId);
-                SendChatToPlayer(steamId, string.Format("  [{0] {1}: faction={2}, personal={3}", npcFaction.Tag, npcFaction.Name, factionRep, playerRep));
+                SendChatToPlayer(steamId, string.Format("  [{0}] {1}: faction={2}, personal={3}", npcFaction.Tag, npcFaction.Name, factionRep, playerRep));
             }
 
             if (_factionsWhoHaveChosen.Contains(playerFaction.FactionId))
@@ -291,23 +292,18 @@ namespace AllianceRepHelper
             //    AND set player-to-faction reputation for every member in the player's faction,
             //    since the game UI may display player-to-faction rep rather than faction-to-faction.
             var allAllowed = GetAllowedFactions();
-            int memberCount = 0;
             foreach (var npcFaction in allAllowed)
             {
                 int rep = (npcFaction.FactionId == targetFaction.FactionId) ? _allyReputation : _enemyReputation;
 
-                // Faction-to-faction in both directions
-                MyAPIGateway.Session.Factions.SetReputation(playerFaction.FactionId, npcFaction.FactionId, rep);
-                MyAPIGateway.Session.Factions.SetReputation(npcFaction.FactionId, playerFaction.FactionId, rep);
+                // Use MyVisualScriptLogicProvider which sets both reputation AND diplomatic relation
+                MyVisualScriptLogicProvider.SetRelationBetweenFactions(playerFaction.Tag, npcFaction.Tag, rep);
+                MyVisualScriptLogicProvider.SetRelationBetweenFactions(npcFaction.Tag, playerFaction.Tag, rep);
 
                 // Player-to-faction for every member of the player's faction
                 foreach (var kvp in playerFaction.Members)
                 {
-                    long memberId = kvp.Key;
-                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(memberId, npcFaction.FactionId, rep);
-
-                    if (npcFaction.FactionId == allAllowed[0].FactionId)
-                        memberCount++;
+                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(kvp.Key, npcFaction.FactionId, rep);
                 }
 
                 Log(string.Format("Set faction [{0}] (id:{1}) <-> [{2}] (id:{3}) reputation to {4}, plus {5} member(s) player rep (requested by steam:{6})",
@@ -403,21 +399,47 @@ namespace AllianceRepHelper
             if (newFaction.IsEveryoneNpc())
                 return;
 
+            // Phase 1: Set reputation to -1500 to reliably trigger the Enemies relation state.
+            // SetRelationBetweenFactions uses internal thresholds to determine the relation,
+            // and -500 may not be enough to cross the Enemies threshold consistently.
             foreach (var npcFaction in npcFactions)
             {
-                // Faction-to-faction in both directions
-                MyAPIGateway.Session.Factions.SetReputation(newFaction.FactionId, npcFaction.FactionId, _defaultReputation);
-                MyAPIGateway.Session.Factions.SetReputation(npcFaction.FactionId, newFaction.FactionId, _defaultReputation);
+                MyVisualScriptLogicProvider.SetRelationBetweenFactions(newFaction.Tag, npcFaction.Tag, -1500);
+                MyVisualScriptLogicProvider.SetRelationBetweenFactions(npcFaction.Tag, newFaction.Tag, -1500);
 
-                // Set personal rep for all members (typically just the founder at this point)
                 foreach (var kvp in newFaction.Members)
                 {
-                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(kvp.Key, npcFaction.FactionId, _defaultReputation);
+                    MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(kvp.Key, npcFaction.FactionId, -1500);
                 }
             }
 
-            Log(string.Format("New faction [{0}] (id:{1}) created -- set default reputation to {2} with all configured NPC factions.",
-                newFaction.Tag, newFaction.FactionId, _defaultReputation));
+            // Phase 2: Queue a second pass on the next tick to set the actual default reputation.
+            // The Enemies relation state will persist since -500 is still negative.
+            _pendingActions.Add(() =>
+            {
+                // Re-resolve in case something changed between ticks
+                IMyFaction faction = MyAPIGateway.Session.Factions.TryGetFactionById(factionId);
+                if (faction == null || faction.IsEveryoneNpc())
+                    return;
+
+                var allowed = GetAllowedFactions();
+                foreach (var npcFaction in allowed)
+                {
+                    MyVisualScriptLogicProvider.SetRelationBetweenFactions(faction.Tag, npcFaction.Tag, _defaultReputation);
+                    MyVisualScriptLogicProvider.SetRelationBetweenFactions(npcFaction.Tag, faction.Tag, _defaultReputation);
+
+                    foreach (var kvp in faction.Members)
+                    {
+                        MyAPIGateway.Session.Factions.SetReputationBetweenPlayerAndFaction(kvp.Key, npcFaction.FactionId, _defaultReputation);
+                    }
+                }
+
+                Log(string.Format("New faction [{0}] (id:{1}) -- adjusted reputation to {2} (phase 2).",
+                  faction.Tag, faction.FactionId, _defaultReputation));
+            });
+
+            Log(string.Format("New faction [{0}] (id:{1}) created -- set initial reputation to -1500, will adjust to {2} next tick.",
+                     newFaction.Tag, newFaction.FactionId, _defaultReputation));
         }
 
         /// <summary>
@@ -582,10 +604,11 @@ namespace AllianceRepHelper
                     writer.WriteLine("# Reputation value set for all OTHER configured factions (default: -1500)");
                     writer.WriteLine("EnemyReputation = -1500");
                     writer.WriteLine();
-                    writer.WriteLine("# Default reputation for newly created factions with all configured NPC factions (default: -500)");
-                    writer.WriteLine("# New factions start mildly negative. Players can improve rep through gameplay");
+                    writer.WriteLine("# Default reputation for newly created factions with all configured NPC factions (default: -600)");
+                    writer.WriteLine("# New factions start negative (Enemies). Players can improve rep through gameplay");
                     writer.WriteLine("# (e.g., killing enemies of an NPC faction) or commit fully with /alliance.");
-                    writer.WriteLine("DefaultReputation = -500");
+                    writer.WriteLine("# Note: The enemy/neutral threshold is around -500. Values at or below -600 reliably show as Enemies (red).");
+                    writer.WriteLine("DefaultReputation = -600");
                     writer.WriteLine();
                     writer.WriteLine("# Only allow NPC factions to be selected (default: true)");
                     writer.WriteLine("# This prevents players from using the command to force relationships with player factions.");
